@@ -1,0 +1,11 @@
+.venv/*
+__pycache__/*
+logs/*
+visualizations/
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+*.pywz
+test_logs/

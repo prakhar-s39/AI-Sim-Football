@@ -355,6 +355,9 @@ class FootballEnv:
 
     def render(self):
         # Basic rendering to support main.py
+        if self.screen is None:
+            return  # Headless mode - no rendering
+        
         self.screen.fill(BLACK)
         self.field.draw(self.screen)
         for player in self.players:
