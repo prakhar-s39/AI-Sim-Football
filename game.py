@@ -138,19 +138,33 @@ class Player:
 
         left_goal = field.goals[0].rect
         right_goal = field.goals[1].rect
+        field_left = field.offset_x
+        field_right = field.offset_x + field.width
         field_top = field.offset_y
         field_bottom = field.offset_y + field.height
 
-        # X bounds (includes goals)
-        self.pos[0] = np.clip(self.pos[0], left_goal.left + PLAYER_RADIUS, right_goal.right - PLAYER_RADIUS)
+        # --- Horizontal confinement ---
+        # Only allow X inside goal width if Y is within goal height
+        if left_goal.top <= self.pos[1] <= left_goal.bottom:
+            self.pos[0] = np.clip(self.pos[0], left_goal.left + PLAYER_RADIUS, field_right - PLAYER_RADIUS)
+        else:
+            self.pos[0] = max(self.pos[0], field_left + PLAYER_RADIUS)
 
-        # Y bounds depend on x
-        if left_goal.left <= self.pos[0] <= left_goal.right:
+        if right_goal.top <= self.pos[1] <= right_goal.bottom:
+            self.pos[0] = np.clip(self.pos[0], field_left + PLAYER_RADIUS, right_goal.right - PLAYER_RADIUS)
+        else:
+            self.pos[0] = min(self.pos[0], field_right - PLAYER_RADIUS)
+
+        # --- Vertical confinement ---
+        if field_left <= self.pos[0] <= field_right:
+            # Inside main field horizontally
+            self.pos[1] = np.clip(self.pos[1], field_top + PLAYER_RADIUS, field_bottom - PLAYER_RADIUS)
+        elif left_goal.left <= self.pos[0] <= left_goal.right:
+            # Inside left goal
             self.pos[1] = np.clip(self.pos[1], left_goal.top + PLAYER_RADIUS, left_goal.bottom - PLAYER_RADIUS)
         elif right_goal.left <= self.pos[0] <= right_goal.right:
+            # Inside right goal
             self.pos[1] = np.clip(self.pos[1], right_goal.top + PLAYER_RADIUS, right_goal.bottom - PLAYER_RADIUS)
-        else:
-            self.pos[1] = np.clip(self.pos[1], field_top + PLAYER_RADIUS, field_bottom - PLAYER_RADIUS)
 
     def interact_with_ball(self, ball):
         diff = ball.pos - self.pos
