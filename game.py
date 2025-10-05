@@ -213,6 +213,7 @@ class FootballEnv:
         self.field = Field()
         self.screen = pygame.display.set_mode((self.field.screen_width, self.field.screen_height))
         pygame.display.set_caption("Football Env")
+        self.font = pygame.font.SysFont(None, 32)
 
         self.clock = pygame.time.Clock()
         self.done = False
@@ -233,62 +234,140 @@ class FootballEnv:
                             self.field.offset_y + self.field.height//2]
         self.ball.vel[:] = 0
 
-    def resolve_player_collisions(self):
-        p1, p2 = self.players
-        diff = p2.pos - p1.pos
-        dist = np.linalg.norm(diff)
-        min_dist = 2 * PLAYER_RADIUS
-        if dist < min_dist:
-            if dist == 0:
-                direction = np.array([1.0, 0.0])
+    def reset(self):
+        for i, player in enumerate(self.players):
+            if i == 0:
+                player.pos[:] = [self.field.offset_x + 100, self.field.offset_y + self.field.height//2]
             else:
-                direction = diff / dist
-            overlap = min_dist - dist
-            p1.pos -= direction * (overlap / 2)
-            p2.pos += direction * (overlap / 2)
+                player.pos[:] = [self.field.offset_x + self.field.width - 100, self.field.offset_y + self.field.height//2]
+            player.vel[:] = 0
+        self.reset_ball()
+        self.score = {"left": 0, "right": 0}
 
-    def step(self):
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_q]:
-            self.done = True
+        return self.get_obs()
 
+    def get_obs(self):
+        obs = []
         for player in self.players:
-            player.handle_input(keys, self.field)
+            obs.extend([player.pos[0], player.pos[1], player.vel[0], player.vel[1]])
+        obs.extend([self.ball.pos[0], self.ball.pos[1], self.ball.vel[0], self.ball.vel[1]])
+        return np.array(obs, dtype=np.float32)
+
+    def apply_action(self, player, action):
+        move = np.zeros(2)
+        # action: 0=up,1=down,2=left,3=right,4=no-op
+        if action == 0: move[1] -= 1
+        elif action == 1: move[1] += 1
+        elif action == 2: move[0] -= 1
+        elif action == 3: move[0] += 1
+        if np.linalg.norm(move) > 0:
+            move = move / np.linalg.norm(move) * player.speed
+        player.vel = move
+        player.pos += move
+
+        left_goal = self.field.goals[0].rect
+        right_goal = self.field.goals[1].rect
+        field_left = self.field.offset_x
+        field_right = self.field.offset_x + self.field.width
+        field_top = self.field.offset_y
+        field_bottom = self.field.offset_y + self.field.height
+
+        # Horizontal confinement with goal checks
+        if left_goal.top <= player.pos[1] <= left_goal.bottom:
+            player.pos[0] = np.clip(player.pos[0], left_goal.left + PLAYER_RADIUS, field_right - PLAYER_RADIUS)
+        else:
+            player.pos[0] = max(player.pos[0], field_left + PLAYER_RADIUS)
+
+        if right_goal.top <= player.pos[1] <= right_goal.bottom:
+            player.pos[0] = np.clip(player.pos[0], field_left + PLAYER_RADIUS, right_goal.right - PLAYER_RADIUS)
+        else:
+            player.pos[0] = min(player.pos[0], field_right - PLAYER_RADIUS)
+
+        # Vertical confinement
+        if field_left <= player.pos[0] <= field_right:
+            player.pos[1] = np.clip(player.pos[1], field_top + PLAYER_RADIUS, field_bottom - PLAYER_RADIUS)
+        elif left_goal.left <= player.pos[0] <= left_goal.right:
+            player.pos[1] = np.clip(player.pos[1], left_goal.top + PLAYER_RADIUS, left_goal.bottom - PLAYER_RADIUS)
+        elif right_goal.left <= player.pos[0] <= right_goal.right:
+            player.pos[1] = np.clip(player.pos[1], right_goal.top + PLAYER_RADIUS, right_goal.bottom - PLAYER_RADIUS)
+
+    def step(self, actions=None):
+        # If no actions, fall back to human input
+        if actions is None:
+            keys = pygame.key.get_pressed()
+            if keys[pygame.K_q]:
+                self.done = True
+            for player in self.players:
+                player.handle_input(keys, self.field)
+        else:
+            for i, player in enumerate(self.players):
+                self.apply_action(player, actions[i])
+
+        # Ball interaction
         for player in self.players:
             player.interact_with_ball(self.ball)
 
         self.resolve_player_collisions()
 
         goal_side = self.ball.update(self.field)
+        reward = [0]*len(self.players)
         if goal_side == "left":
+            reward[1] = 1
+            reward[0] = -1
             self.score["right"] += 1
             self.reset_ball()
         elif goal_side == "right":
+            reward[0] = 1
+            reward[1] = -1
             self.score["left"] += 1
             self.reset_ball()
 
+        obs = self.get_obs()
+        return obs, reward, self.done, {}
+
+    def resolve_player_collisions(self):
+        # Separate overlapping players and apply high friction damping on collision
+        num_players = len(self.players)
+        if num_players < 2:
+            return
+        for i in range(num_players):
+            for j in range(i + 1, num_players):
+                p1 = self.players[i]
+                p2 = self.players[j]
+                diff = p2.pos - p1.pos
+                dist = np.linalg.norm(diff)
+                min_dist = 2 * PLAYER_RADIUS
+                if dist == 0:
+                    # Avoid division by zero; choose an arbitrary separation direction
+                    direction = np.array([1.0, 0.0])
+                    dist = 1e-6
+                else:
+                    direction = diff / dist
+                overlap = min_dist - dist
+                if overlap > 0:
+                    # Push players apart equally
+                    correction = direction * (overlap / 2.0)
+                    p1.pos -= correction
+                    p2.pos += correction
+                    # High friction on collision: heavily damp velocities
+                    p1.vel *= 0.2
+                    p2.vel *= 0.2
+
     def render(self):
+        # Basic rendering to support main.py
         self.screen.fill(BLACK)
         self.field.draw(self.screen)
         for player in self.players:
             player.draw(self.screen)
         self.ball.draw(self.screen)
-
-        font = pygame.font.SysFont(None, 36)
-        text = font.render(f"{self.score['left']} - {self.score['right']}", True, WHITE)
-        self.screen.blit(text, (self.field.screen_width//2 - 30, 20))
-
+        # Draw score at the top
+        score_text = f"Left {self.score['left']} - Right {self.score['right']}"
+        text_surface = self.font.render(score_text, True, WHITE)
+        text_rect = text_surface.get_rect()
+        text_rect.centerx = self.field.offset_x + self.field.width // 2
+        text_rect.top = 10
+        self.screen.blit(text_surface, text_rect)
         pygame.display.flip()
-
-    def run(self):
-        while not self.done:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.done = True
-            self.step()
-            self.render()
-            self.clock.tick(60)
-
 
 if __name__ == "__main__":
     env = FootballEnv()
