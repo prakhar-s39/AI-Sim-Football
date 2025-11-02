@@ -358,7 +358,7 @@ class ParallelSimulationManager:
     def run_parallel_simulations(self, num_episodes=100):
         """Run multiple simulations sequentially (pygame doesn't work well with threading)"""
         print(f"Running {self.num_simulations} simulations sequentially to avoid pygame threading issues...")
-        
+        # TODO: Make multithreading work
         for sim_id in range(self.num_simulations):
             print(f"Starting simulation {sim_id + 1}/{self.num_simulations}")
             self.run_simulation(sim_id, num_episodes)
