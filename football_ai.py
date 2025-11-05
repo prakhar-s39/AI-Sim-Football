@@ -4,11 +4,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.distributions import Categorical
-import json
-import os
-from datetime import datetime
-from collections import deque
-import time
 
 # Set device for GPU acceleration
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -17,38 +12,81 @@ print(f"Using device: {device}")
 class RandomAI:
     def __init__(self, n_agents=2):
         self.n_agents = n_agents
-        self.action_probability = 0.3  # Probability of taking action vs staying still
 
-    def act(self, obs):
-        # Return random actions for each agent with some probability of no-op
-        actions = []
-        for i in range(self.n_agents):
-            if np.random.random() < self.action_probability:
-                # Take a random action (0-3 for movement, 4 for no-op)
-                action = np.random.randint(0, 5)
-            else:
-                # Stay still
-                action = 4
-            actions.append(action)
-        return actions
+    def act(self, obs, agent_id=0):
+        # returns (action, log_prob, value) to match MAPPOAgent signature used in demo
+        action = int(np.random.randint(0, 5))
+        return action, 0.0, 0.0
+
 
 class SimpleChaseAI:
-    def __init__(self, n_agents=2):
+    def __init__(self, n_agents=2, noise=0.15):
         self.n_agents = n_agents
+        self.noise = float(noise)
 
-    def act(self, obs):
-        # obs = [p1x, p1y, p1vx, p1vy, p2x, p2y, p2vx, p2vy, ballx, bally, ballvx, ballvy]
-        actions = []
-        ball_x, ball_y = obs[-4], obs[-3]
-        for i in range(self.n_agents):
-            px, py = obs[i*4], obs[i*4+1]
-            # Move toward the ball
-            if abs(ball_x - px) > abs(ball_y - py):
-                action = 3 if ball_x > px else 2
-            else:
-                action = 1 if ball_y > py else 0
-            actions.append(action)
-        return actions
+    def act(self, obs, agent_id=0):
+        # occasional random action for exploration / unpredictability
+        if np.random.rand() < self.noise:
+            return int(np.random.randint(0, 5)), 0.0, 0.0
+        px = obs[agent_id*4 + 0]; py = obs[agent_id*4 + 1]
+        bx = obs[8]; by = obs[9]
+        dx = bx - px; dy = by - py
+        if abs(dx) > abs(dy):
+            action = 3 if dx > 0 else 2
+        else:
+            action = 1 if dy > 0 else 0
+        # tiny jitter: sometimes choose a different sensible direction
+        if np.random.rand() < (self.noise / 2):
+            action = int(np.random.choice([0,1,2,3,4]))
+        return int(action), 0.0, 0.0
+
+
+class SkilledHeuristicAI:
+    """Stronger heuristic: predicts ball and positions between ball and own goal, kicks when close."""
+    def __init__(self, aggressiveness=1.0, noise=0.12):
+        self.aggressiveness = float(aggressiveness)
+        self.noise = float(noise)
+
+    def act(self, obs, agent_id=0):
+        # small chance to take a random action
+        if np.random.rand() < self.noise:
+            return int(np.random.randint(0, 5)), 0.0, 0.0
+
+        px = obs[agent_id*4 + 0]; py = obs[agent_id*4 + 1]
+        bx = obs[8]; by = obs[9]; bvx = obs[10]; bvy = obs[11]
+
+        # predict short-term ball position and add gaussian jitter
+        pred_steps = 6
+        pbx = bx + bvx * pred_steps + np.random.normal(0, 6.0 * self.noise)
+        pby = by + bvy * pred_steps + np.random.normal(0, 6.0 * self.noise)
+
+        dist_to_ball = np.hypot(bx - px, by - py)
+        if dist_to_ball < 60 * (1.0 + self.noise):
+            tx, ty = pbx, pby
+        else:
+            tx = (pbx + (self._opponent_goal_x(agent_id, obs))) / 2.0 + np.random.normal(0, 8.0 * self.noise)
+            ty = (pby + (obs[1] if agent_id == 0 else obs[5])) / 2.0 + np.random.normal(0, 8.0 * self.noise)
+
+        dx = tx - px; dy = ty - py
+        if np.hypot(dx, dy) < 6:
+            action = 4
+        elif abs(dx) > abs(dy):
+            action = 3 if dx > 0 else 2
+        else:
+            action = 1 if dy > 0 else 0
+
+        # occasional exploratory flip
+        if np.random.rand() < (self.noise / 3):
+            action = int(np.random.choice([0,1,2,3,4]))
+
+        return int(action), 0.0, 0.0
+
+    def _opponent_goal_x(self, agent_id, obs):
+        try:
+            p1x = obs[0]; p2x = obs[4]
+            return p2x + 200 if agent_id == 0 else p1x - 200
+        except Exception:
+            return obs[8]  # ball x as fallback
 
 class ActorCritic(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim=256):
@@ -278,7 +316,7 @@ class ParallelSimulationManager:
         from game import FootballEnv
         
         env = FootballEnv()
-        env.screen = None  # Disable rendering for training
+        # leave env.screen alone so FootballEnv.render() can create a window when needed
         logger = GameLogger(os.path.join(self.log_dir, f"sim_{simulation_id}"))
         
         # Create MAPPO agents
@@ -365,6 +403,23 @@ class ParallelSimulationManager:
             print(f"Completed simulation {sim_id + 1}/{self.num_simulations}")
         
         return self.collect_results()
+    
+    class FootballEnv:
+        ...
+        def render(self):
+            ...
+        @property
+        def done(self):
+            if self.num_simulations == 1:
+                return self.games[0].done
+            return all(g.done for g in self.games)
+    
+        @property
+        def score(self):
+            """Backward-compatible access: env.score -> current game score (single) or list/dict for multi."""
+            if self.num_simulations == 1:
+                return self.games[0].score
+            return [g.score for g in self.games]
     
     def collect_results(self):
         """Collect results from all simulations"""

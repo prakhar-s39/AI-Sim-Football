@@ -7,48 +7,37 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
 from game import FootballEnv
-from football_ai import RandomAI, SimpleChaseAI, MAPPOAgent, ParallelSimulationManager, GameLogger
+from football_ai import RandomAI, SimpleChaseAI, MAPPOAgent, ParallelSimulationManager, GameLogger, SkilledHeuristicAI
 
 def run_demo_game(fps=60):
-    """Run a demo game with MAPPO agents"""
-    env = FootballEnv()
-    
-    # Create MAPPO agents
-    agent1 = MAPPOAgent()
-    agent2 = MAPPOAgent()
-    
-    print("Demo: Two MAPPO agents competing (initially random behavior)")
-    print("Watch as they learn to play football!")
+    """Run a demo game with a skilled heuristic agent vs a simple chase AI"""
+    env = FootballEnv(num_simulations=1)
 
-    max_steps = 1000  # limit game length
+    # Create heuristic / baseline agents
+    skilled = SkilledHeuristicAI()
+    opponent = SimpleChaseAI()
+
+    print("Demo: Skilled heuristic agent vs SimpleChaseAI")
+    max_steps = 1000
     step_count = 0
 
+    obs = env.reset()
     while not env.done and step_count < max_steps:
-        # Get current observation
-        obs = env.get_obs()
-        
-        # Get actions from MAPPO agents
-        action1, log_prob1, value1 = agent1.act(obs)
-        action2, log_prob2, value2 = agent2.act(obs)
+        # pass agent index so heuristics act for the correct player
+        a1, _, _ = skilled.act(obs, 0)
+        a2, _, _ = opponent.act(obs, 1)
 
         # Step environment with AI actions
-        obs, rewards, done, info = env.step([action1, action2])
-        
-        # Store experiences for learning
-        agent1.store_experience(obs, action1, rewards[0], obs, done, log_prob1, value1)
-        agent2.store_experience(obs, action2, rewards[1], obs, done, log_prob2, value2)
+        next_obs, rewards, done, info = env.step([int(a1), int(a2)])
 
-        # Render
+        obs = next_obs
         env.render()
-
-        # Only limit FPS if rendering (not in headless mode)
         if env.screen is not None and fps > 0:
             env.clock.tick(fps)
         step_count += 1
 
     print("Game finished!")
-    print(f"Final Score: Left {env.score['left']} - Right {env.score['right']}")
-    print("Note: This was just a demo. For actual learning, use --mode train")
+    print(f"Final Score: Left {env.game.score['left']} - Right {env.game.score['right']}")
     pygame.quit()
 
 def train_mappo_agents(num_episodes=1000, num_simulations=4, save_models=True, log_dir="logs"):

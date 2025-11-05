@@ -1,5 +1,6 @@
 import pygame
 import numpy as np
+import math
 
 # --- Sizes ---
 FIELD_WIDTH, FIELD_HEIGHT = 800, 600
@@ -109,23 +110,23 @@ class Ball:
 
 
 class Player:
-    def __init__(self, pos, color, controls, mass=3.0, speed=4.0):
+    def __init__(self, pos, color, controls=None, mass=3.0, speed=4.0):
         self.pos = np.array(pos, dtype=float)
         self.color = color
         self.mass = mass
         self.speed = speed
-        self.controls = controls
+        self.controls = controls or {}
         self.vel = np.zeros(2, dtype=float)
 
     def handle_input(self, keys, field):
         move = np.zeros(2, dtype=float)
-        if keys[self.controls["up"]]:
+        if self.controls.get("up") and keys[self.controls["up"]]:
             move[1] -= 1
-        if keys[self.controls["down"]]:
+        if self.controls.get("down") and keys[self.controls["down"]]:
             move[1] += 1
-        if keys[self.controls["left"]]:
+        if self.controls.get("left") and keys[self.controls["left"]]:
             move[0] -= 1
-        if keys[self.controls["right"]]:
+        if self.controls.get("right") and keys[self.controls["right"]]:
             move[0] += 1
 
         if np.linalg.norm(move) > 0:
@@ -207,27 +208,27 @@ class Goal:
         pygame.draw.rect(screen, WHITE, self.rect, 2)  # outline
 
 
-class FootballEnv:
-    def __init__(self):
-        pygame.init()
-        self.field = Field()
-        self.screen = pygame.display.set_mode((self.field.screen_width, self.field.screen_height))
-        pygame.display.set_caption("Football Env")
-        self.font = pygame.font.SysFont(None, 32)
-
-        self.clock = pygame.time.Clock()
-        self.done = False
-
+class Game:
+    """Represents a single game instance (one field, ball, players)."""
+    def __init__(self, field=None, seed=None, controls=None):
+        self.field = field or Field()
+        if seed is not None:
+            np.random.seed(seed)
         # Entities
         self.ball = Ball([self.field.offset_x + self.field.width//2,
                           self.field.offset_y + self.field.height//2])
+        # controls can be used for human input; if None game is intended for agent control
+        if controls is None:
+            controls = [
+                {"up": None, "down": None, "left": None, "right": None},
+                {"up": None, "down": None, "left": None, "right": None}
+            ]
         self.players = [
-            Player([self.field.offset_x + 100, self.field.offset_y + self.field.height//2], RED,
-                   {"up": pygame.K_w, "down": pygame.K_s, "left": pygame.K_a, "right": pygame.K_d}),
-            Player([self.field.offset_x + self.field.width - 100, self.field.offset_y + self.field.height//2], BLUE,
-                   {"up": pygame.K_UP, "down": pygame.K_DOWN, "left": pygame.K_LEFT, "right": pygame.K_RIGHT})
+            Player([self.field.offset_x + 100, self.field.offset_y + self.field.height//2], RED, controls[0]),
+            Player([self.field.offset_x + self.field.width - 100, self.field.offset_y + self.field.height//2], BLUE, controls[1])
         ]
         self.score = {"left": 0, "right": 0}
+        self.done = False
 
     def reset_ball(self):
         self.ball.pos[:] = [self.field.offset_x + self.field.width//2,
@@ -243,7 +244,7 @@ class FootballEnv:
             player.vel[:] = 0
         self.reset_ball()
         self.score = {"left": 0, "right": 0}
-
+        self.done = False
         return self.get_obs()
 
     def get_obs(self):
@@ -291,14 +292,15 @@ class FootballEnv:
         elif right_goal.left <= player.pos[0] <= right_goal.right:
             player.pos[1] = np.clip(player.pos[1], right_goal.top + PLAYER_RADIUS, right_goal.bottom - PLAYER_RADIUS)
 
-    def step(self, actions=None):
-        # If no actions, fall back to human input
+    def step(self, actions=None, keys=None):
+        # If no actions provided and keys provided, use human input for players with controls set
         if actions is None:
-            keys = pygame.key.get_pressed()
-            if keys[pygame.K_q]:
-                self.done = True
-            for player in self.players:
-                player.handle_input(keys, self.field)
+            if keys is None:
+                # nothing to do for agent-controlled simulation
+                pass
+            else:
+                for player in self.players:
+                    player.handle_input(keys, self.field)
         else:
             for i, player in enumerate(self.players):
                 self.apply_action(player, actions[i])
@@ -338,41 +340,156 @@ class FootballEnv:
                 dist = np.linalg.norm(diff)
                 min_dist = 2 * PLAYER_RADIUS
                 if dist == 0:
-                    # Avoid division by zero; choose an arbitrary separation direction
                     direction = np.array([1.0, 0.0])
                     dist = 1e-6
                 else:
                     direction = diff / dist
                 overlap = min_dist - dist
                 if overlap > 0:
-                    # Push players apart equally
                     correction = direction * (overlap / 2.0)
                     p1.pos -= correction
                     p2.pos += correction
-                    # High friction on collision: heavily damp velocities
                     p1.vel *= 0.2
                     p2.vel *= 0.2
 
-    def render(self):
-        # Basic rendering to support main.py
-        if self.screen is None:
-            return  # Headless mode - no rendering
-        
-        self.screen.fill(BLACK)
-        self.field.draw(self.screen)
+    def render_to_surface(self, font=None):
+        surf = pygame.Surface((self.field.screen_width, self.field.screen_height))
+        surf.fill(BLACK)
+        self.field.draw(surf)
         for player in self.players:
-            player.draw(self.screen)
-        self.ball.draw(self.screen)
-        # Draw score at the top
-        score_text = f"Left {self.score['left']} - Right {self.score['right']}"
-        text_surface = self.font.render(score_text, True, WHITE)
-        text_rect = text_surface.get_rect()
-        text_rect.centerx = self.field.offset_x + self.field.width // 2
-        text_rect.top = 10
-        self.screen.blit(text_surface, text_rect)
-        pygame.display.flip()
+            player.draw(surf)
+        self.ball.draw(surf)
+        if font:
+            score_text = f"Left {self.score['left']} - Right {self.score['right']}"
+            text_surface = font.render(score_text, True, WHITE)
+            text_rect = text_surface.get_rect()
+            text_rect.centerx = self.field.offset_x + self.field.width // 2
+            text_rect.top = 10
+            surf.blit(text_surface, text_rect)
+        return surf
+
+
+class FootballEnv:
+    """
+    Wrapper that can run one or multiple Game instances.
+    - num_simulations=1 keeps single-env compatibility.
+    - num_simulations>1 arranges games in a grid in one pygame window.
+    """
+    def __init__(self, num_simulations=1, cols=None, fps=30):
+        pygame.init()
+        pygame.font.init()
+        self.num_simulations = max(1, num_simulations)
+        self.fps = fps
+        self.font = pygame.font.SysFont(None, 28)
+
+        # create games
+        self.games = [Game() for _ in range(self.num_simulations)]
+
+        # single-env compatibility: expose simple attributes for num_simulations==1
+        if self.num_simulations == 1:
+            self.game = self.games[0]
+            self.screen = pygame.display.set_mode((self.game.field.screen_width, self.game.field.screen_height))
+            pygame.display.set_caption("Football Env")
+            self.clock = pygame.time.Clock()
+        else:
+            # layout grid for multiple games
+            if cols is None:
+                cols = int(math.ceil(math.sqrt(self.num_simulations)))
+            self.cols = max(1, cols)
+            self.rows = int(math.ceil(self.num_simulations / self.cols))
+            sub_w = self.games[0].field.screen_width
+            sub_h = self.games[0].field.screen_height
+            win_w = self.cols * sub_w + (self.cols + 1) * SCREEN_PADDING // 2
+            win_h = self.rows * sub_h + (self.rows + 1) * SCREEN_PADDING // 2
+            self.screen = pygame.display.set_mode((win_w, win_h))
+            pygame.display.set_caption(f"FootballEnv - {self.num_simulations} sims")
+            self.clock = pygame.time.Clock()
+
+    # single-env compatibility methods
+    def reset(self, idx=None):
+        if self.num_simulations == 1 or idx is not None:
+            if idx is None: idx = 0
+            return self.games[idx].reset()
+        else:
+            return [g.reset() for g in self.games]
+
+    def step(self, actions=None):
+        """
+        Single-mode: actions is a list of two ints for the single game.
+        Multi-mode: actions should be a list of per-game action-lists (or None).
+        Returns single tuple in single-mode, list of tuples in multi-mode.
+        """
+        if self.num_simulations == 1:
+            return self.games[0].step(actions)
+        else:
+            results = []
+            keys = pygame.key.get_pressed()
+            for i, g in enumerate(self.games):
+                act = None
+                if isinstance(actions, list) and i < len(actions):
+                    act = actions[i]
+                # allow first game to take keyboard control if act is None and controls provided
+                res = g.step(act, keys if act is None else None)
+                results.append(res)
+            return results
+
+    @property
+    def done(self):
+        if self.num_simulations == 1:
+            return self.games[0].done
+        return all(g.done for g in self.games)
+
+    @property
+    def score(self):
+        """Backward-compatible access: env.score -> current game score (single) or list/dict for multi."""
+        if self.num_simulations == 1:
+            return self.games[0].score
+        return [g.score for g in self.games]
+
+    def render(self):
+        if self.screen is None:
+            return
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                for g in self.games:
+                    g.done = True
+                return
+
+        if self.num_simulations == 1:
+            surf = self.games[0].render_to_surface(self.font)
+            self.screen.blit(surf, (0, 0))
+            pygame.display.flip()
+            self.clock.tick(self.fps)
+        else:
+            sub_w = self.games[0].field.screen_width
+            sub_h = self.games[0].field.screen_height
+            self.screen.fill(BLACK)
+            for idx, g in enumerate(self.games):
+                r = idx // self.cols
+                c = idx % self.cols
+                x = SCREEN_PADDING // 4 + c * (sub_w + SCREEN_PADDING // 4)
+                y = SCREEN_PADDING // 4 + r * (sub_h + SCREEN_PADDING // 4)
+                surf = g.render_to_surface(self.font)
+                self.screen.blit(surf, (x, y))
+            pygame.display.flip()
+            self.clock.tick(self.fps)
+
+
+# compatibility shim: re-export core classes and FootballEnv so existing imports keep working
+from game_core import Game, Field, Ball, Player, Goal  # noqa: F401
+from football_env import FootballEnv  # noqa: F401
+
+__all__ = ["Game", "Field", "Ball", "Player", "Goal", "FootballEnv"]
 
 if __name__ == "__main__":
-    env = FootballEnv()
-    env.run()
+    # simple demo preserved from previous single-file layout
+    env = FootballEnv(num_simulations=4)
+    running_steps = 500
+    for _ in range(running_steps):
+        acts = []
+        for _ in range(env.num_simulations):
+            acts.append([__import__("numpy").random.randint(0,5), __import__("numpy").random.randint(0,5)])
+        env.step(acts); env.render()
+        if env.done: break
+    import pygame as _pg; _pg.quit()
 
