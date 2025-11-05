@@ -17,7 +17,6 @@ def run_demo_game(fps=60):
     skilled = SkilledHeuristicAI()
     opponent = SimpleChaseAI()
 
-    print("Demo: Skilled heuristic agent vs SimpleChaseAI")
     max_steps = 1000
     step_count = 0
 
